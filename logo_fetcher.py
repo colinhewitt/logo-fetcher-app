@@ -78,15 +78,6 @@ def scrape_website_for_logos(domain):
     logos = []
     svg_urls = []
     
-    # Special case for Float - directly try the known URL
-    if domain == "floatapp.com":
-        svg_url = "https://cdn.prod.website-files.com/678ca6953be404b47f5b05db/678cc3b918806dafa4e6c497_Float-logo-purple.svg"
-        svg_urls.append(("Float Official SVG", svg_url))
-        st.info(f"Found Float's logo at {svg_url}")
-        
-        # We'll use Clearbit as a fallback for the actual display
-        # The message about the SVG URL will be shown separately
-    
     try:
         url = f"https://{domain}"
         headers = {
@@ -237,9 +228,41 @@ def fetch_logos(domain, max_alternatives=5, include_website_scraping=True):
                 if len(results) >= max_alternatives:
                     break
     
-    # Special case for floatapp.com - add a message about SVG
-    if domain == "floatapp.com" and "Clearbit" in results:
-        st.info("**Note**: Float uses an SVG logo. For best quality, download directly from: https://cdn.prod.website-files.com/678ca6953be404b47f5b05db/678cc3b918806dafa4e6c497_Float-logo-purple.svg")
+    # More advanced SVG detection based on common patterns
+    if not svg_urls:
+        # Check common logo paths if no SVGs were found yet
+        company_name = domain.split('.')[0]
+        
+        # Try to intelligently find SVG logos at common paths
+        common_svg_paths = [
+            # Standard logo paths
+            f"https://{domain}/logo.svg",
+            f"https://{domain}/assets/logo.svg",
+            f"https://{domain}/images/logo.svg",
+            f"https://{domain}/static/logo.svg",
+            f"https://{domain}/img/logo.svg",
+            f"https://{domain}/media/logo.svg",
+            
+            # Company specific paths
+            f"https://{domain}/assets/{company_name}-logo.svg",
+            f"https://{domain}/images/{company_name}-logo.svg",
+            f"https://{domain}/static/{company_name}-logo.svg",
+            f"https://{domain}/img/{company_name}-logo.svg",
+            
+            # WordPress common paths
+            f"https://{domain}/wp-content/uploads/logo.svg",
+            f"https://{domain}/wp-content/themes/*/logo.svg"
+        ]
+        
+        # Try each path to see if it exists
+        for path in common_svg_paths:
+            if '*' in path:  # Skip paths with wildcards as they can't be directly requested
+                continue
+                
+            svg_url = check_svg_url(path)
+            if svg_url:
+                svg_urls.append((f"Common SVG path", svg_url))
+                break  # Found one, no need to keep trying
     
     # Display any SVG URLs found
     if svg_urls:
