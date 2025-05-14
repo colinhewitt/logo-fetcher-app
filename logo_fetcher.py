@@ -264,12 +264,45 @@ def fetch_logos(domain, max_alternatives=5, include_website_scraping=True):
                 svg_urls.append((f"Common SVG path", svg_url))
                 break  # Found one, no need to keep trying
     
-    # Display any SVG URLs found
+    # Display any SVG URLs found with embedded preview
     if svg_urls:
-        st.info("### SVG Logos Found")
+        st.info("### SVG Logos Found (Vector Format)")
         for name, url in svg_urls:
-            st.markdown(f"**{name}**: [{url}]({url})")
-            st.markdown(f"Download with: `curl -o logo.svg {url}`")
+            col1, col2 = st.columns([1, 1])
+            
+            with col1:
+                st.markdown(f"**{name}**")
+                st.markdown(f"[Open in browser]({url})")
+                st.markdown(f"Download: `curl -o logo.svg {url}`")
+                
+            with col2:
+                # Try to display the SVG directly using HTML
+                try:
+                    # Fetch the SVG content
+                    response = requests.get(url, timeout=10)
+                    if response.status_code == 200 and ('svg' in response.headers.get('Content-Type', '') or url.endswith('.svg')):
+                        svg_content = response.text
+                        
+                        # Format SVG for display - add fixed dimensions if not present
+                        if 'width=' not in svg_content.lower() and 'height=' not in svg_content.lower():
+                            svg_content = svg_content.replace('<svg', '<svg width="200" height="100"', 1)
+                        
+                        # Embed the SVG directly using HTML
+                        st.components.v1.html(
+                            f"""
+                            <div style="border: 1px solid #ddd; padding: 10px; border-radius: 5px;">
+                                {svg_content}
+                                <p style="margin-top: 10px; font-size: 12px; color: #666;">
+                                    ↑ Vector SVG Preview (scales perfectly at any size)
+                                </p>
+                            </div>
+                            """,
+                            height=150
+                        )
+                    else:
+                        st.warning("Could not preview SVG - check URL")
+                except Exception as e:
+                    st.warning(f"Could not preview SVG: {str(e)[:100]}")
     
     return results
 
