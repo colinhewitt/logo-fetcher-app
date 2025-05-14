@@ -2,10 +2,20 @@ import streamlit as st
 import requests
 import random
 import re
+import tempfile
+import os
 from PIL import Image
 from io import BytesIO
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
+
+# Import CairoSVG for SVG conversion
+try:
+    import cairosvg
+    HAS_CAIROSVG = True
+except ImportError:
+    HAS_CAIROSVG = False
+    st.warning("CairoSVG is not installed. SVG logos will not be displayed. Install with: pip install cairosvg")
 
 # Logo sources with their templates - order matters for priority
 LOGO_SOURCES = {
@@ -52,21 +62,46 @@ def fetch_logo_from_source(source_name, domain):
     
     return None
 
-def check_for_svg_at_url(specific_url, domain):
-    """Check for SVG file at a specific URL pattern."""
+def convert_svg_to_png(svg_content, width=None, height=None):
+    """Convert SVG content to PNG format using CairoSVG."""
+    if not HAS_CAIROSVG:
+        return None
+        
     try:
-        # Try known SVG logo paths
-        url = f"{specific_url}"
+        # Create a BytesIO object to store the PNG
+        png_io = BytesIO()
+        
+        # Convert SVG to PNG
+        if width and height:
+            cairosvg.svg2png(bytestring=svg_content, write_to=png_io, output_width=width, output_height=height)
+        else:
+            cairosvg.svg2png(bytestring=svg_content, write_to=png_io)
+            
+        # Reset the position to the beginning of the BytesIO object
+        png_io.seek(0)
+        
+        # Open the PNG with PIL
+        return Image.open(png_io)
+    except Exception as e:
+        st.error(f"Error converting SVG to PNG: {e}")
+        return None
+
+def fetch_svg_logo(url):
+    """Fetch an SVG logo from a URL and convert it to PNG."""
+    try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code == 200 and "svg" in response.headers.get('Content-Type', ''):
-            # We found an SVG, now we need to convert it to PNG for display
-            st.warning(f"Found SVG logo at {url} but Streamlit can't display it directly.")
-            return None
-    except Exception:
-        pass
+        response = requests.get(url, headers=headers, timeout=15)
+        
+        if response.status_code == 200:
+            content_type = response.headers.get('Content-Type', '').lower()
+            
+            if 'svg' in content_type or url.lower().endswith('.svg'):
+                return convert_svg_to_png(response.content, width=500)
+    except Exception as e:
+        st.warning(f"Error fetching SVG: {e}")
+    
     return None
 
 def scrape_website_for_logos(domain):
@@ -77,10 +112,15 @@ def scrape_website_for_logos(domain):
     if domain == "floatapp.com":
         try:
             url = "https://cdn.prod.website-files.com/678ca6953be404b47f5b05db/678cc3b918806dafa4e6c497_Float-logo-purple.svg"
-            st.info(f"Found Float's logo at {url}, but can't display SVG directly.")
-            # We can't display SVGs directly, and would need additional libraries to convert
-        except Exception:
-            pass
+            if HAS_CAIROSVG:
+                svg_img = fetch_svg_logo(url)
+                if svg_img:
+                    logos.append((f"Float SVG", svg_img))
+                    st.success(f"Successfully converted Float's SVG logo from {url}")
+            else:
+                st.info(f"Found Float's logo at {url}, but CairoSVG is not installed for conversion.")
+        except Exception as e:
+            st.warning(f"Error with Float logo: {e}")
     
     try:
         url = f"https://{domain}"
@@ -148,12 +188,17 @@ def scrape_website_for_logos(domain):
                         pass
             
             # Strategy 2: Check for SVG logos in links
-            for link in soup.find_all('a'):
+            for link in soup.find_all(['a', 'link']):
                 href = link.get('href', '')
                 if '.svg' in href.lower() and ('logo' in href.lower() or company_name.lower() in href.lower()):
                     absolute_url = urljoin(url, href)
-                    # We can't display SVGs directly in Streamlit without conversion
-                    st.info(f"Found SVG logo at {absolute_url}, but can't display SVG directly.")
+                    
+                    if HAS_CAIROSVG:
+                        svg_img = fetch_svg_logo(absolute_url)
+                        if svg_img:
+                            logos.append((f"SVG from website", svg_img))
+                    else:
+                        st.info(f"Found SVG logo at {absolute_url}, but CairoSVG is not installed for conversion.")
                         
     except Exception as e:
         st.warning(f"Error scraping website: {e}")
@@ -229,9 +274,13 @@ def fetch_logos(domain, max_alternatives=5, include_website_scraping=True):
                 if len(results) >= max_alternatives:
                     break
     
-    # Special case for floatapp.com - show a message about the SVG
-    if domain == "floatapp.com" and "Clearbit" in results:
-        st.info("**Note**: Float's website uses an SVG logo (https://cdn.prod.website-files.com/678ca6953be404b47f5b05db/678cc3b918806dafa4e6c497_Float-logo-purple.svg) which Streamlit can't display directly. The Clearbit version is shown instead.")
+    # Special case for floatapp.com - try to fetch the SVG directly if not already added
+    if domain == "floatapp.com" and not any("SVG" in key for key in results.keys()):
+        float_svg_url = "https://cdn.prod.website-files.com/678ca6953be404b47f5b05db/678cc3b918806dafa4e6c497_Float-logo-purple.svg"
+        if HAS_CAIROSVG:
+            svg_img = fetch_svg_logo(float_svg_url)
+            if svg_img:
+                results["Float Official SVG"] = svg_img
     
     return results
 
