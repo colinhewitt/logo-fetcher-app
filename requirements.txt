@@ -2,4 +2,3 @@ requests>=2.25.0
 pillow>=8.0.0
 streamlit>=1.10.0
 beautifulsoup4>=4.9.0
-cairosvg>=2.5.0

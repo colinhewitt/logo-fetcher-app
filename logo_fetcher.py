@@ -9,13 +9,8 @@ from io import BytesIO
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 
-# Import CairoSVG for SVG conversion
-try:
-    import cairosvg
-    HAS_CAIROSVG = True
-except ImportError:
-    HAS_CAIROSVG = False
-    st.warning("CairoSVG is not installed. SVG logos will not be displayed. Install with: pip install cairosvg")
+# We'll use a simpler approach for SVG handling
+HAS_SVG_SUPPORT = False
 
 # Logo sources with their templates - order matters for priority
 LOGO_SOURCES = {
@@ -62,65 +57,35 @@ def fetch_logo_from_source(source_name, domain):
     
     return None
 
-def convert_svg_to_png(svg_content, width=None, height=None):
-    """Convert SVG content to PNG format using CairoSVG."""
-    if not HAS_CAIROSVG:
-        return None
-        
-    try:
-        # Create a BytesIO object to store the PNG
-        png_io = BytesIO()
-        
-        # Convert SVG to PNG
-        if width and height:
-            cairosvg.svg2png(bytestring=svg_content, write_to=png_io, output_width=width, output_height=height)
-        else:
-            cairosvg.svg2png(bytestring=svg_content, write_to=png_io)
-            
-        # Reset the position to the beginning of the BytesIO object
-        png_io.seek(0)
-        
-        # Open the PNG with PIL
-        return Image.open(png_io)
-    except Exception as e:
-        st.error(f"Error converting SVG to PNG: {e}")
-        return None
-
-def fetch_svg_logo(url):
-    """Fetch an SVG logo from a URL and convert it to PNG."""
+def check_svg_url(url):
+    """Check if a URL points to an SVG file and return the URL."""
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
-        response = requests.get(url, headers=headers, timeout=15)
+        response = requests.head(url, headers=headers, timeout=5)
         
-        if response.status_code == 200:
-            content_type = response.headers.get('Content-Type', '').lower()
-            
-            if 'svg' in content_type or url.lower().endswith('.svg'):
-                return convert_svg_to_png(response.content, width=500)
-    except Exception as e:
-        st.warning(f"Error fetching SVG: {e}")
+        content_type = response.headers.get('Content-Type', '').lower()
+        if 'svg' in content_type or url.lower().endswith('.svg'):
+            return url
+    except Exception:
+        pass
     
     return None
 
 def scrape_website_for_logos(domain):
     """Scrape the website directly to find logo images."""
     logos = []
+    svg_urls = []
     
     # Special case for Float - directly try the known URL
     if domain == "floatapp.com":
-        try:
-            url = "https://cdn.prod.website-files.com/678ca6953be404b47f5b05db/678cc3b918806dafa4e6c497_Float-logo-purple.svg"
-            if HAS_CAIROSVG:
-                svg_img = fetch_svg_logo(url)
-                if svg_img:
-                    logos.append((f"Float SVG", svg_img))
-                    st.success(f"Successfully converted Float's SVG logo from {url}")
-            else:
-                st.info(f"Found Float's logo at {url}, but CairoSVG is not installed for conversion.")
-        except Exception as e:
-            st.warning(f"Error with Float logo: {e}")
+        svg_url = "https://cdn.prod.website-files.com/678ca6953be404b47f5b05db/678cc3b918806dafa4e6c497_Float-logo-purple.svg"
+        svg_urls.append(("Float Official SVG", svg_url))
+        st.info(f"Found Float's logo at {svg_url}")
+        
+        # We'll use Clearbit as a fallback for the actual display
+        # The message about the SVG URL will be shown separately
     
     try:
         url = f"https://{domain}"
@@ -192,13 +157,10 @@ def scrape_website_for_logos(domain):
                 href = link.get('href', '')
                 if '.svg' in href.lower() and ('logo' in href.lower() or company_name.lower() in href.lower()):
                     absolute_url = urljoin(url, href)
-                    
-                    if HAS_CAIROSVG:
-                        svg_img = fetch_svg_logo(absolute_url)
-                        if svg_img:
-                            logos.append((f"SVG from website", svg_img))
-                    else:
-                        st.info(f"Found SVG logo at {absolute_url}, but CairoSVG is not installed for conversion.")
+                    svg_url = check_svg_url(absolute_url)
+                    if svg_url:
+                        svg_urls.append((f"SVG from website", svg_url))
+                        st.info(f"Found SVG logo at {svg_url}")
                         
     except Exception as e:
         st.warning(f"Error scraping website: {e}")
@@ -217,8 +179,8 @@ def scrape_website_for_logos(domain):
     # Sort by image size (larger first) for better quality options
     unique_logos.sort(key=lambda x: x[1].width * x[1].height, reverse=True)
     
-    # Return the top 3 largest unique logos
-    return [("Website: " + domain, img) for url, img in unique_logos[:3]]
+    # Return the top 3 largest unique logos and any SVG URLs found
+    return [("Website: " + domain, img) for url, img in unique_logos[:3]], svg_urls
 
 def fetch_logos(domain, max_alternatives=5, include_website_scraping=True):
     """Fetch logos from multiple sources including direct website scraping."""
@@ -255,8 +217,9 @@ def fetch_logos(domain, max_alternatives=5, include_website_scraping=True):
                 results[source_name] = img
     
     # Finally try website scraping for higher quality logos if enabled and we still need more
+    svg_urls = []
     if include_website_scraping and len(results) < max_alternatives:
-        website_logos = scrape_website_for_logos(domain)
+        website_logos, svg_urls = scrape_website_for_logos(domain)
         
         for i, (source, img) in enumerate(website_logos):
             # Check if this image is unique compared to existing ones
@@ -274,13 +237,16 @@ def fetch_logos(domain, max_alternatives=5, include_website_scraping=True):
                 if len(results) >= max_alternatives:
                     break
     
-    # Special case for floatapp.com - try to fetch the SVG directly if not already added
-    if domain == "floatapp.com" and not any("SVG" in key for key in results.keys()):
-        float_svg_url = "https://cdn.prod.website-files.com/678ca6953be404b47f5b05db/678cc3b918806dafa4e6c497_Float-logo-purple.svg"
-        if HAS_CAIROSVG:
-            svg_img = fetch_svg_logo(float_svg_url)
-            if svg_img:
-                results["Float Official SVG"] = svg_img
+    # Special case for floatapp.com - add a message about SVG
+    if domain == "floatapp.com" and "Clearbit" in results:
+        st.info("**Note**: Float uses an SVG logo. For best quality, download directly from: https://cdn.prod.website-files.com/678ca6953be404b47f5b05db/678cc3b918806dafa4e6c497_Float-logo-purple.svg")
+    
+    # Display any SVG URLs found
+    if svg_urls:
+        st.info("### SVG Logos Found")
+        for name, url in svg_urls:
+            st.markdown(f"**{name}**: [{url}]({url})")
+            st.markdown(f"Download with: `curl -o logo.svg {url}`")
     
     return results
 
