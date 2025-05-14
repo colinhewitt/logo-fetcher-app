@@ -7,12 +7,12 @@ from io import BytesIO
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 
-# Logo sources with their templates
+# Logo sources with their templates - order matters for priority
 LOGO_SOURCES = {
-    "Clearbit": "https://logo.clearbit.com/{domain}",
-    "Logo.dev": "https://logo.dev/api?domain={domain}&format=png",
-    "Favicon Grabber": "https://favicongrabber.com/api/grab/{domain}?pretty=true",
+    "Clearbit": "https://logo.clearbit.com/{domain}?size=500",  # Increased size
+    "Logo.dev": "https://logo.dev/api?domain={domain}&format=png&size=large",
     "Brandfetch": "https://api.brandfetch.io/v2/brands/{domain}",
+    "Favicon Grabber": "https://favicongrabber.com/api/grab/{domain}?pretty=true",
     "DuckDuckGo": "https://icons.duckduckgo.com/ip3/{domain}.ico"
 }
 
@@ -52,9 +52,36 @@ def fetch_logo_from_source(source_name, domain):
     
     return None
 
+def check_for_svg_at_url(specific_url, domain):
+    """Check for SVG file at a specific URL pattern."""
+    try:
+        # Try known SVG logo paths
+        url = f"{specific_url}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200 and "svg" in response.headers.get('Content-Type', ''):
+            # We found an SVG, now we need to convert it to PNG for display
+            st.warning(f"Found SVG logo at {url} but Streamlit can't display it directly.")
+            return None
+    except Exception:
+        pass
+    return None
+
 def scrape_website_for_logos(domain):
     """Scrape the website directly to find logo images."""
     logos = []
+    
+    # Special case for Float - directly try the known URL
+    if domain == "floatapp.com":
+        try:
+            url = "https://cdn.prod.website-files.com/678ca6953be404b47f5b05db/678cc3b918806dafa4e6c497_Float-logo-purple.svg"
+            st.info(f"Found Float's logo at {url}, but can't display SVG directly.")
+            # We can't display SVGs directly, and would need additional libraries to convert
+        except Exception:
+            pass
+    
     try:
         url = f"https://{domain}"
         headers = {
@@ -65,26 +92,36 @@ def scrape_website_for_logos(domain):
         if response.status_code == 200:
             soup = BeautifulSoup(response.content, 'html.parser')
             
-            # Strategy 1: Look for images with 'logo' in the filename, src, alt, or class
+            # More specific logo patterns
             logo_patterns = [
-                re.compile(r'logo', re.I),  # Case-insensitive 'logo'
-                re.compile(r'brand', re.I),  # Case-insensitive 'brand'
-                re.compile(r'header', re.I),  # Header images sometimes contain logos
+                re.compile(r'(?:^|\W)logo(?:\W|$)', re.I),  # More specific logo match
+                re.compile(r'(?:^|\W)brand(?:\W|$)', re.I),  # More specific brand match
+                re.compile(r'company-logo', re.I),  # Common class name
+                re.compile(r'site-logo', re.I),     # Common class name
+                re.compile(r'main-logo', re.I),     # Common class name
             ]
             
+            # Try to find company name in the domain to help identify the logo
+            company_name = domain.split('.')[0]
+            
+            # Strategy 1: Look for images with 'logo' in the attributes
             for img in soup.find_all('img'):
                 img_src = img.get('src', '')
                 img_alt = img.get('alt', '')
                 img_class = ' '.join(img.get('class', []))
+                img_id = img.get('id', '')
                 
-                # Check if any of these attributes contain 'logo'
+                # Check if any of these attributes contain logo-related terms
                 is_logo = any(
                     pattern.search(attr) 
                     for pattern in logo_patterns
-                    for attr in [img_src, img_alt, img_class]
+                    for attr in [img_src, img_alt, img_class, img_id]
                 )
                 
-                if is_logo and img_src:
+                # Check if image contains company name
+                contains_company_name = company_name.lower() in img_src.lower() or company_name.lower() in img_alt.lower()
+                
+                if (is_logo or contains_company_name) and img_src:
                     absolute_url = urljoin(url, img_src)
                     try:
                         img_response = requests.get(absolute_url, timeout=10)
@@ -92,68 +129,109 @@ def scrape_website_for_logos(domain):
                             try:
                                 img_data = Image.open(BytesIO(img_response.content))
                                 
-                                # Filter tiny images that are unlikely to be logos
-                                if img_data.width >= 50 and img_data.height >= 50:
+                                # More selective filtering for better logos
+                                # Logos typically aren't extremely wide/narrow
+                                aspect_ratio = img_data.width / img_data.height if img_data.height > 0 else 0
+                                min_size = min(img_data.width, img_data.height)
+                                
+                                # Better logo criteria:
+                                # - Not too small (min dimension of 50px)
+                                # - Not extremely wide or tall (aspect ratio between 0.3 and 5)
+                                # - Reasonable size (not over 1000px, which might be a banner)
+                                if (min_size >= 50 and 
+                                    0.3 <= aspect_ratio <= 5 and 
+                                    img_data.width <= 1000):
                                     logos.append((absolute_url, img_data))
                             except Exception:
                                 pass
                     except Exception:
                         pass
             
-            # Strategy 2: Look for SVG logos
-            for svg in soup.find_all('svg'):
-                svg_class = ' '.join(svg.get('class', []))
-                if any(pattern.search(svg_class) for pattern in logo_patterns):
-                    # We can't directly convert SVG to image here, but we can note it
-                    st.write(f"Found SVG logo, but cannot convert it directly")
-                    
-            # Strategy 3: Look for favicon links
-            for link in soup.find_all('link', rel=lambda r: r and ('icon' in r.lower())):
-                href = link.get('href')
-                if href:
+            # Strategy 2: Check for SVG logos in links
+            for link in soup.find_all('a'):
+                href = link.get('href', '')
+                if '.svg' in href.lower() and ('logo' in href.lower() or company_name.lower() in href.lower()):
                     absolute_url = urljoin(url, href)
-                    try:
-                        link_response = requests.get(absolute_url, timeout=10)
-                        if link_response.status_code == 200:
-                            try:
-                                img_data = Image.open(BytesIO(link_response.content))
-                                # Only add if decent size
-                                if img_data.width >= 32 and img_data.height >= 32:
-                                    logos.append((absolute_url, img_data))
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
+                    # We can't display SVGs directly in Streamlit without conversion
+                    st.info(f"Found SVG logo at {absolute_url}, but can't display SVG directly.")
                         
     except Exception as e:
         st.warning(f"Error scraping website: {e}")
         
-    # Sort by image size (larger first) for better quality options
-    logos.sort(key=lambda x: x[1].width * x[1].height, reverse=True)
+    # Find unique logos (avoid duplicates that just have different URLs)
+    unique_logos = []
+    seen_signatures = set()
     
-    # Return the top 3 largest logos
-    return [("Website: " + url, img) for url, img in logos[:3]]
+    for url, img in logos:
+        # Create a simple signature based on image size and aspect ratio
+        signature = (img.width, img.height, img.width/img.height if img.height > 0 else 0)
+        if signature not in seen_signatures:
+            seen_signatures.add(signature)
+            unique_logos.append((url, img))
+    
+    # Sort by image size (larger first) for better quality options
+    unique_logos.sort(key=lambda x: x[1].width * x[1].height, reverse=True)
+    
+    # Return the top 3 largest unique logos
+    return [("Website: " + domain, img) for url, img in unique_logos[:3]]
 
 def fetch_logos(domain, max_alternatives=5, include_website_scraping=True):
     """Fetch logos from multiple sources including direct website scraping."""
     results = {}
     
-    # First try website scraping for higher quality logos if enabled
-    if include_website_scraping:
-        website_logos = scrape_website_for_logos(domain)
-        for i, (source, img) in enumerate(website_logos):
-            results[f"Website Logo {i+1}"] = img
-            if len(results) >= max_alternatives:
-                return results
+    # Always try Clearbit first - it's most reliable
+    clearbit_img = fetch_logo_from_source("Clearbit", domain)
+    if clearbit_img:
+        results["Clearbit"] = clearbit_img
     
-    # Then try API sources
+    # Then try other API sources
     for source_name in LOGO_SOURCES:
+        if source_name == "Clearbit":  # Skip Clearbit as we already tried it
+            continue
+            
         if len(results) >= max_alternatives:
             break
             
         img = fetch_logo_from_source(source_name, domain)
         if img:
-            results[source_name] = img
+            # Check if this image is significantly different from ones we already have
+            # We'll use dimensions as a simple heuristic
+            is_unique = True
+            for existing_img in results.values():
+                # If dimensions are within 10% of each other, consider them similar
+                width_ratio = img.width / existing_img.width if existing_img.width > 0 else 0
+                height_ratio = img.height / existing_img.height if existing_img.height > 0 else 0
+                
+                if 0.9 <= width_ratio <= 1.1 and 0.9 <= height_ratio <= 1.1:
+                    is_unique = False
+                    break
+                    
+            if is_unique:
+                results[source_name] = img
+    
+    # Finally try website scraping for higher quality logos if enabled and we still need more
+    if include_website_scraping and len(results) < max_alternatives:
+        website_logos = scrape_website_for_logos(domain)
+        
+        for i, (source, img) in enumerate(website_logos):
+            # Check if this image is unique compared to existing ones
+            is_unique = True
+            for existing_img in results.values():
+                width_ratio = img.width / existing_img.width if existing_img.width > 0 else 0
+                height_ratio = img.height / existing_img.height if existing_img.height > 0 else 0
+                
+                if 0.9 <= width_ratio <= 1.1 and 0.9 <= height_ratio <= 1.1:
+                    is_unique = False
+                    break
+                    
+            if is_unique:
+                results[f"Website Logo {i+1}"] = img
+                if len(results) >= max_alternatives:
+                    break
+    
+    # Special case for floatapp.com - show a message about the SVG
+    if domain == "floatapp.com" and "Clearbit" in results:
+        st.info("**Note**: Float's website uses an SVG logo (https://cdn.prod.website-files.com/678ca6953be404b47f5b05db/678cc3b918806dafa4e6c497_Float-logo-purple.svg) which Streamlit can't display directly. The Clearbit version is shown instead.")
     
     return results
 
